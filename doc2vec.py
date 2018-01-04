@@ -1,9 +1,10 @@
 from word2vec import *
 
 class Doc2Vec(Word2Vec):
-  def __init__(self, dbow_train_words=True, **kwargs):
+  def __init__(self, dbow_train_words=True, dm_concat=False, **kwargs):
     super(Doc2Vec, self).__init__(**kwargs)
     self.dbow_train_words = dbow_train_words
+    self.dm_concat = dm_concat
 
   def _get_tarcon_generator(self, sents_iter):
     return (tarcon for id_, sent in sents_iter for tarcon in self._tarcon_per_sent(sent, id_))
@@ -18,13 +19,13 @@ class Doc2Vec(Word2Vec):
     contexts = before + after
 
     if contexts:
-      if self.hidden_layer_toggle: # skip gram/dbow
+      if self.hidden_layer_toggle: # PV-DBOW/skip gram
         if self.dbow_train_words:
           for context in contexts:
             yield target, context
         yield id_, target
-      else: # cbow/dm
-        yield target, contexts + [id_]
+      else: # PV-DM/cbow
+        yield target, before + [id_] + after
 
   def _tarcon_per_sent(self, sent, id_):
     sent_trimmed = [self.vocab[word].index for word in sent if self._keep_word(word)]
@@ -32,6 +33,7 @@ class Doc2Vec(Word2Vec):
     for word_index in xrange(len(sent_trimmed)):
       for tarcon in self._tarcon_per_target(sent_trimmed, word_index, id_):
         yield tarcon
+
 
     self._sents_covered += 1
     self._progress = self._sents_covered / float(self.total_sents)
@@ -42,15 +44,12 @@ class Doc2Vec(Word2Vec):
 
   def initialize_variables(self):
     docvec_tags = self._docvec_tags
-    def seeded_vector(seed_string):
-      random = np.random.RandomState(hash(seed_string) & 0xffffffff)
-      return (random.rand(self.size) - 0.5) / self.size
-
     syn0_val = np.empty((self.vocabulary_size+len(docvec_tags), self.size), dtype=np.float32)
     for i in xrange(self.vocabulary_size):
       syn0_val[i] = self._seeded_vector(self.index2word[i] + str(self.seed))
     for i in xrange(len(docvec_tags)):
       syn0_val[i+self.vocabulary_size] = self._seeded_vector("%d %s" % (self.seed, docvec_tags[i])) 
+
 
     self._syn0 = tf.Variable(syn0_val, dtype=tf.float32)
     self._syn1 = tf.Variable(tf.truncated_normal([self.vocabulary_size, self.size],

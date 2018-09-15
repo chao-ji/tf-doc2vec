@@ -190,25 +190,6 @@ class Doc2VecDataset(Word2VecDataset):
     return {'inputs': inputs, 'labels': labels, 'progress': progress}
 
 
-def subsample(indices, keep_probs):
-  """Filters out-of-vocabulary words and then applies subsampling on words in a 
-  sentence. Words with high frequencies have lower keep probs.
-
-  Args:
-    indices: rank-1 int tensor, the word indices within a sentence.
-    keep_probs: rank-1 float tensor, the prob to drop the each vocabulary word. 
-
-  Returns:
-    indices: rank-1 int tensor, the word indices within a sentence after 
-      subsampling.
-  """
-  indices = tf.boolean_mask(indices, tf.not_equal(indices, OOV_ID))
-#  keep_probs = tf.gather(keep_probs, indices)
-#  randvars = tf.random_uniform(tf.shape(keep_probs), 0, 1)
-#  indices = tf.boolean_mask(indices, tf.less(randvars, keep_probs))
-  return indices
-
-
 def generate_instances(
     indices, 
     arch, 
@@ -255,8 +236,8 @@ def generate_instances(
   def per_target_fn(index, init_array):
     target_index = index + window_size if dm_concat else index
 
-    reduced_size = 0 #0 if dm_concat else tf.random_uniform(
-#        [], maxval=window_size, dtype=tf.int32))
+    reduced_size = (0 if dm_concat else tf.random_uniform(
+        [], maxval=window_size, dtype=tf.int32))
     left = tf.range(
         tf.maximum(target_index - window_size + reduced_size, 0), target_index)
     right = tf.range(target_index + 1, tf.minimum(

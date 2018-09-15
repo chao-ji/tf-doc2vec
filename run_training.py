@@ -2,8 +2,8 @@ r"""Executable for training Doc2Vec models.
 
 Example:
   python run_training.py \
-    --filenames=/PATH/TO/FILE/file1.txt,/PATH/TO/FILE/file2.txt
-    --out_dir=/PATH/TO/OUT_DIR/
+    --filenames=/PATH/TO/FILE/file1.txt,/PATH/TO/FILE/file2.txt \
+    --out_dir=/PATH/TO/OUT_DIR/ \
     --arch=PV-DM
 
 The learned training document embeddings will be saved to

@@ -2,10 +2,10 @@ r"""Executable for learning the embeddings of documents not present in
 training set. 
 
 Example:
-  python run_training.py \
-    --filenames=/PATH/TO/FILE/file1.txt,/PATH/TO/FILE/file2.txt
-    --filenames_infer=/PATH/TO/FILE/infer_file.txt
-    --out_dir=/PATH/TO/OUT_DIR/
+  python run_inference.py \
+    --filenames=/PATH/TO/FILE/file1.txt,/PATH/TO/FILE/file2.txt \
+    --filenames_infer=/PATH/TO/FILE/infer_file.txt \
+    --out_dir=/PATH/TO/OUT_DIR/ \
     --arch=PV-DM
 
 NOTE: you must use the same parameters that were used in `run_training.py`.

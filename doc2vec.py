@@ -1,187 +1,229 @@
-from word2vec import *
+import tensorflow as tf
 
-class Doc2Vec(Word2Vec):
-  """Trains Doc2Vec model. The model can be trained on two model architectures 
-  "Distributed bag of words" (`PV-DBOW`) or "Distributed memory" (`PV-DM`) and by two training algorithms 
-  "negative sampling" (`ns`) or "hierarchical softmax" (`hs`). 
+from word2vec.word2vec import Word2VecModel
 
-  `PV-DBOW` is implemeted as skip gram `sg` in Word2Vec; `PV-DM` is implemented as continuous bag of words
-  `cbow` in Word2Vec.
 
-  As in Word2Vec model, `hidden_layer_toggle` is used to switch between `PV-DBOW` and `PV-DM`, 
-  `output_layer_toggle` is used to switch between `ns` and `hs`.
-  """
-  def __init__(self, dbow_train_words=True, dm_concat=False, **kwargs):
-    super(Doc2Vec, self).__init__(**kwargs)
-    self.dbow_train_words = dbow_train_words                              # If `True`, train on word-to-word examples in `PV-DBOW` architecture
-    self.dm_concat = dm_concat                                            # If `True`, word and document vectors are concatenated (as opposed to averaged) as a single context vector; Valid only in `PV-DM` architecture
-    self._concat_mode = (not self.hidden_layer_toggle) and self.dm_concat # Inidcates if model is in concatenate mode (See `dm_concat`)
-    self._inference_mode = False                                          # Indicates if model is in inference mode (word vectors and output weights `syn1`, `biases` are freezed at the time of training).
- 
-  def _get_tarcon_generator(self, sents_iter):
-    return (tarcon for id_, sent in sents_iter for tarcon in self._tarcon_per_sent(sent, id_))
+class Doc2VecModel(Word2VecModel):
+  """Doc2VecModel."""
+  def __init__(self,
+               arch='PV-DM',
+               algm='negative_sampling',
+               embed_size=100,
+               batch_size=32,
+               negatives=5,
+               power=0.75,
+               alpha=0.025,
+               min_alpha=0.0001, 
+               add_bias=True,
+               random_seed=0,
+               dm_concat=True,
+               window_size=5):
+    """Constructor.
 
-  def _cbow_ns(self, batch):
-    if self._concat_mode:
-      return np.concatenate(batch[1]), np.array(batch[0])
-    else: 
-      segment_ids = np.repeat(xrange(len(batch[0])), map(len, batch[1]))
-      return np.array([np.concatenate(batch[1]), segment_ids]).T, np.array(batch[0])
-
-  def _cbow_hs(self, batch):
-    paths = [np.array([self.vocab[self.index2word[i]].point, self.vocab[self.index2word[i]].code]).T for i in batch[0]]
-    code_lengths = map(len, paths)
-    labels = np.vstack(paths)
-    contexts_repeated = np.repeat(batch[1], code_lengths, axis=0)
-    if self._concat_mode:
-      inputs = np.concatenate(contexts_repeated)
-    else:
-      contexts_repeated_segment_ids = np.repeat(xrange(len(contexts_repeated)), map(len, contexts_repeated))
-      inputs = np.array([np.concatenate(contexts_repeated), contexts_repeated_segment_ids]).T
-    return inputs, labels
-
-  def _tarcon_per_target(self, index_list, word_index, id_):
-    target = index_list[word_index]
-    reduced_size = 0 if self._concat_mode else self._random_state.randint(self.window)
-    left = self._words_to_left(index_list, word_index, reduced_size)
-    right = self._words_to_right(index_list, word_index, reduced_size)
-    contexts = left + right
-
-    if contexts:
-      if self.hidden_layer_toggle: # PV-DBOW/skip gram
-        if self.dbow_train_words:
-          for context in contexts:
-            yield target, context
-        yield id_, target
-      else: # PV-DM/cbow
-        yield target, left + [id_] + right 
-
-  def _tarcon_per_sent(self, sent, id_):
-    sent_subsampled = [self.vocab[word].index for word in sent if self._keep_word(word)]
-
-    if self._concat_mode: 
-      sent_subsampled_padded = ([self.null_word.index] * self.window) + \
-        sent_subsampled + ([self.null_word.index] * self.window)
-      for word_index in xrange(self.window, len(sent_subsampled) + self.window):
-        for tarcon in self._tarcon_per_target(sent_subsampled_padded, word_index, id_):
-          yield tarcon 
-    else:
-      for word_index in xrange(len(sent_subsampled)):
-        for tarcon in self._tarcon_per_target(sent_subsampled, word_index, id_):
-          yield tarcon
-
-    self._sents_covered += 1
-    self._progress = self._sents_covered / float(self._total_sents)
-
-  def build_vocab(self, sents):
-    """Build vocabulary"""
-    super(Doc2Vec, self).build_vocab(sents)
-    if self._concat_mode:
-      key, self.null_word = "\0", VocabWord(count=1, index=len(self.vocab), keep_prob=0., fraction=0., word="\0")
-      self._unigram_count.append(self.null_word.count) 
-      self.vocab[key] = self.null_word
-      self.vocab_size = len(self.vocab)
-      self.index2word.append(key)
-
-  def _get_syn0_init_val(self, wordtags, doctags):
-    syn0_w_init_val = np.vstack([self._seeded_vector(wordtags[i] + str(self.seed)) 
-      for i in xrange(len(wordtags))]).astype(np.float32)
-    syn0_d_init_val = np.vstack([self._seeded_vector("%d %s" % (self.seed, doctags[i]))
-      for i in xrange(len(doctags))]).astype(np.float32)
-    return syn0_w_init_val, syn0_d_init_val
-
-  def create_variables(self, syn0_w_init_val, syn0_d_init_val, inference_mode):
-    """Define trainable variables"""
-    syn1_rows = self.vocab_size if self.output_layer_toggle else self.vocab_size - 1
-    syn1_cols = self.size * (2 * self.window + 1) if self._concat_mode else self.size    
-
-    with tf.variable_scope("model", reuse=tf.AUTO_REUSE):
-      syn0_w = tf.get_variable("syn0_w", initializer=syn0_w_init_val, dtype=tf.float32)
-      syn1 = tf.get_variable("syn1", 
-        initializer=tf.truncated_normal([syn1_rows, syn1_cols], 
-        stddev=1.0/np.sqrt(self.size)), dtype=tf.float32)
-      biases = tf.get_variable("biases", initializer=tf.zeros([syn1_rows]),
-        dtype=tf.float32)
-    syn0_d = tf.Variable(initial_value=syn0_d_init_val, name="syn0_d")
-    syn0 = tf.concat([syn0_w, syn0_d], axis=0)
-    var_list = [syn0_d] if inference_mode else [syn0_w, syn0_d, syn1, biases]
-    return syn0, syn1, biases, var_list
-
-  def _input_to_hidden(self, syn0, inputs):
-    if self._concat_mode:
-      return tf.reshape(tf.nn.embedding_lookup(syn0, inputs), [-1, self.size * (2 * self.window + 1)]) 
-    else:
-      return super(Doc2Vec, self)._input_to_hidden(syn0, inputs)
-
-  def _get_sent_iter(self, sents):
-    return itertools.chain(*itertools.tee(enumerate(sents, start=self.vocab_size), self.epochs))
-
-  def _get_train_step(self, lr, loss, var_list):
-    sgd = tf.train.GradientDescentOptimizer(lr)
-    if self.clip_gradient:
-      gradients, variables = zip(*sgd.compute_gradients(loss, var_list=var_list))
-      gradients, _ = tf.clip_by_global_norm(gradients, 5.0)
-      return sgd.apply_gradients(zip(gradients, variables))
-    else:
-      return sgd.minimize(loss, var_list=var_list)
-
-  def train(self, sents, doctags, sess, inference_mode=False):
-    """Learn document vectors.
-
-    If `inference_mode` is `True`, word vectors and output weights are fixed during training. 
     Args:
-      `sents`: an iterable of list of strings
-       `doctags`: an iterable of strings, with same length as `sents`
-      `inference_mode`: bool
-      `sess`: TensorFlow session
+      arch: string scalar, architecture ('PV-DBOW' or 'PV-DM').
+      algm: string scalar: training algorithm ('negative_sampling' or
+        'hierarchical_softmax').
+      embed_size: int scalar, length of word vector.
+      batch_size: int scalar, batch size.
+      negatives: int scalar, num of negative words to sample.
+      power: float scalar, distortion for negative sampling. 
+      alpha: float scalar, initial learning rate.
+      min_alpha: float scalar, final learning rate.
+      add_bias: bool scalar, whether to add bias term to dotproduct 
+        between syn0 and syn1 vectors.
+      random_seed: int scalar, random_seed.
+      dm_concat: bool scalar, whether to concatenate word and document vectors
+        instead of averaging them in dm architecture.
+      window_size: int scalar, num of words on the left or right side of
+        target word within a window.
+    """
+    super(Doc2VecModel, self).__init__(arch, algm, embed_size, batch_size,
+        negatives, power, alpha, min_alpha, add_bias, random_seed)
+    self._dm_concat = (arch == 'PV-DM') and dm_concat
+    self._window_size = window_size
+
+    self._syn0_w = None
+    self._syn0_d = None
+
+  @property
+  def syn0_w(self):
+    return self._syn0_w
+
+  @property
+  def syn0_d(self):
+    return self._syn0_d
+
+  def get_save_list(self):
+    """Returns the list of variables to be saved by tf.train.Saver()."""
+    return [w for w in tf.global_variables() if w != self._syn0_d] 
+
+  def _build_loss(self, inputs, labels, unigram_counts, num_docs, scope=None):
+    """Builds the graph that leads from data tensors (`inputs`, `labels`)
+    to loss. Has the side effect of setting attribute `syn0_w`, `syn0_d`.
+
+    Args:
+      inputs: int tensor of shape [batch_size] (PV-DBOW) or 
+        [batch_size, 2*window_size+2] (PV-DM) 
+      labels: int tensor of shape [batch_size] (negative_sampling) or
+        [batch_size, 2*max_depth+1] (hierarchical_softmax)
+      unigram_count: list of int, holding word counts. Index of each entry
+        is the same as the word index into the vocabulary.
+      num_docs: int scalar, num of documents.
+      scope: string scalar, scope name.
 
     Returns:
-      `WordVectors` instance
+      loss: float tensor, cross entropy loss. 
+    """
+    syn0_w, syn0_d, syn1, biases = self._create_embeddings(
+        len(unigram_counts), num_docs)
+    syn0 = tf.concat([syn0_w, syn0_d], axis=0)
+    self._syn0_w, self._syn0_d = syn0_w, syn0_d
+    with tf.variable_scope(scope, 'Loss', [inputs, labels, syn0, syn1, biases]):
+      if self._algm == 'negative_sampling':
+        loss = self._negative_sampling_loss(
+            unigram_counts, inputs, labels, syn0, syn1, biases)
+      elif self._algm == 'hierarchical_softmax':
+        loss = self._hierarchical_softmax_loss(
+            inputs, labels, syn0, syn1, biases)
+      return loss
+    
+  def _create_embeddings(self, vocab_size, num_docs, scope=None):
+    """Creates initial word and document embedding variables.
 
-     """
-    if not hasattr(self, "vocab"):
-      if inference_mode:
-        raise ValueError("Model is not yet trained for inference mode.")
-      self.build_vocab(sents)
-      if not self.output_layer_toggle:
-        self.create_binary_tree()
+    Args:
+      vocab_size: int scalar, num of words in vocabulary.
+      num_docs: int scalar, num of documents.
+      scope: string scalar, scope name.
 
-    sents_iter = self._get_sent_iter(sents)
-    batch_iter = self.generate_batch(sents_iter)
+    Returns:
+      syn0_w: float tensor of shape [vocab_size, embed_size], input word
+        embeddings (i.e. weights of hidden layer).
+      syn0_d: float tensor of shape [num_docs, embed_size], input doc
+        embeddings (i.e. weights of hidden layer).
+      syn1: float tensor of shape [syn1_rows, embed_size], output word
+        embeddings (i.e. weights of output layer).
+      biases: float tensor of shape [syn1_rows], biases added onto the logits.
+    """   
+    syn1_rows = (vocab_size if self._algm == 'negative_sampling'
+                            else vocab_size - 1)
+    syn1_cols = (self._embed_size*(2*self._window_size+1)
+        if self._dm_concat else self._embed_size)
+    with tf.variable_scope(scope, 'Embedding'):
+      syn0_init = tf.random_uniform([vocab_size + num_docs, self._embed_size],
+          -0.5/self._embed_size, 0.5/self._embed_size, seed=self._random_seed)
 
-    self._reset(sents)
+      syn0_w = tf.get_variable('syn0_w', initializer=syn0_init[:vocab_size])
+      syn0_d = tf.get_variable('syn0_d', initializer=syn0_init[vocab_size:])
+      syn1 = tf.get_variable('syn1', initializer=tf.random_uniform([
+          syn1_rows, syn1_cols], -0.1, 0.1))
+      biases = tf.get_variable('biases', initializer=tf.zeros([syn1_rows]))
+      return syn0_w, syn0_d, syn1, biases
 
-    syn0_w_init_val, syn0_d_init_val = self._get_syn0_init_val(self.index2word, doctags)
-    self.syn0, self.syn1, self.biases, var_list = self.create_variables(syn0_w_init_val, syn0_d_init_val, inference_mode)
-    inputs, labels = tf.placeholder(dtype=tf.int64), tf.placeholder(dtype=tf.int64)
-    progress = tf.placeholder(dtype=tf.float32)
-    lr = tf.maximum(self.alpha * (1 - progress) + self.min_alpha * progress, self.min_alpha)
-    loss = self.build_graph(inputs, labels, self.syn0, self.syn1, self.biases)
-    train_step = self._get_train_step(lr, loss, var_list)
-    sess.run([var.initializer for var in var_list])
+  def _get_inputs_syn0(self, syn0, inputs):
+    """Builds the activations of hidden layer given input word and doc 
+    embeddings `syn0` (concat of `syn0_w` and `syn0_d`) and input word and 
+    doc indices.
 
-    self._do_train(batch_iter, inputs, labels, progress, lr, loss, train_step, sess)
+    Args:
+      syn0: float tensor of shape [vocab_size + num_docs, embed_size]
+      inputs: int tensor of shape [batch_size] (PV-BOW) or 
+        [batch_size, 2*window_size+2] (PV-DM)
 
-    syn0_final = self.syn0.eval()
-    syn0_w_final, syn0_d_final = syn0_final[:self.vocab_size], syn0_final[self.vocab_size:]
-    if self.norm_embed:
-      syn0_final = syn0_final / np.linalg.norm(syn0_final, axis=1)
-    return WordVectors(syn0_w_final, self.vocab, self.index2word), \
-      DocVectors(syn0_d_final, doctags, sents)
+    Returns:
+      inputs_syn0: [batch_size, embed_size]
+    """    
+    if self._dm_concat:
+      inputs_syn0 = tf.reshape(tf.nn.embedding_lookup(syn0, inputs[:, :-1]), 
+          [-1, self._embed_size*(2*self._window_size+1)])
+    elif self._arch == 'PV-DBOW':
+      inputs_syn0 = tf.gather(syn0, inputs)
+    else:
+      inputs_syn0 = []
+      contexts_list = tf.unstack(inputs)
+      for contexts in contexts_list:
+        context_words = contexts[:-1]
+        true_size = contexts[-1]
+        inputs_syn0.append(
+            tf.reduce_mean(tf.gather(syn0, context_words[:true_size]), axis=0))
+      inputs_syn0 = tf.stack(inputs_syn0)
+    return inputs_syn0
+
+  def _train_fn(self, dataset, filenames, is_inferring=False):
+    """Adds training related ops to the graph. The `var_list` depends on whether
+    `is_inferring` is True or False.
+
+    Args:
+      dataset: a `Doc2VecDataset` instance.
+      filenames: a list of strings, holding names of text files.
+
+    Returns: 
+      to_be_run_dict: dict mapping from names to tensors/operations, holding
+        the following entries:
+        { 'grad_update_op': optimization ops,
+          'loss': cross entropy loss,
+          'learning_rate': float-scalar learning rate}
+    """
+    num_docs = sum([len(list(open(fn))) for fn in filenames])
+
+    tensor_dict = dataset.get_tensor_dict(filenames)
+    inputs, labels = tensor_dict['inputs'], tensor_dict['labels']
+
+    loss = self._build_loss(inputs, labels, dataset.unigram_counts, num_docs)
+
+    learning_rate = tf.maximum(self._alpha * (1 - tensor_dict['progress'][0]) +
+         self._min_alpha * tensor_dict['progress'][0], self._min_alpha)
+
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+
+    var_list = [self._syn0_d] if is_inferring else tf.global_variables()
+    grad_update_op = optimizer.minimize(loss,var_list=var_list)
+    to_be_run_dict = {'grad_update_op': grad_update_op,
+                      'loss': loss,
+                      'learning_rate': learning_rate}
+    return to_be_run_dict
+    
+
+class Doc2VecTrainer(Doc2VecModel):
+  """Performs training of doc2vec model."""
+  def train(self, dataset, filenames):
+    """Adds training related ops to the graph. All variables (`syn0_w`,
+    `syn0_d`, `syn1`, `biases`) will be updated. 
+
+    Args:
+      dataset: a `Doc2VecDataset` instance.
+      filenames: a list of strings, holding names of text files.
+
+    Returns: 
+      to_be_run_dict: dict mapping from names to tensors/operations, holding
+        the following entries:
+        { 'grad_update_op': optimization ops,
+          'loss': cross entropy loss,
+          'learning_rate': float-scalar learning rate}
+    """
+    to_be_run_dict = self._train_fn(dataset, filenames, False)
+    return to_be_run_dict
 
 
-class DocVectors(object):
-  """Trained doc2vec model. Stores the document tags, tag-to-document mapping, and 
-  final document embeddings"""
-  def __init__(self, syn0_final, doctags, sents):
-    self.syn0_final = syn0_final
-    self.doctags = doctags
-    self.sents = sents
-    self.doc_dict = dict([(tag, (index, sent)) for index, (tag, sent)
-      in enumerate(zip(self.doctags, sents))]) 
-  
-  def __contains__(self, doctag):
-    return doctag in self.doc_dict
+class Doc2VecInferencer(Doc2VecModel):
+  """Performs inferences on vectors of unseen documents (not appearing in
+   training set).
+  """
+  def infer(self, dataset, filenames):
+    """Adds training related ops to the graph. Only document embeddings `syn0_d`
+    will be updated.
 
-  def __getitem__(self, doctag):
-    return self.syn_final[self.doc_dict[doctag][0]]
+    Args:
+      dataset: a `Doc2VecDataset` instance.
+      filenames: a list of strings, holding names of text files.
+
+    Returns: 
+      to_be_run_dict: dict mapping from names to tensors/operations, holding
+        the following entries:
+        { 'grad_update_op': optimization ops,
+          'loss': cross entropy loss,
+          'learning_rate': float-scalar learning rate}
+    """   
+    to_be_run_dict = self._train_fn(dataset, filenames, True)
+    return to_be_run_dict
+     

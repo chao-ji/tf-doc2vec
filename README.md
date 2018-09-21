@@ -50,6 +50,14 @@ As in Word2Vec, Doc2Vec can be trained in two architectures (`PV-DBOW` and `PV-D
 |hierarchical softmax, `dbow_train_words=True`|hierarchical softmax, `dbow_train_words=True`|
 |hierarchical softmax, `dbow_train_words=False`|hierarchical softmax, `dbow_train_words=False`|
 
+### Example: classifying IMDB movie reviews that are represented as real-valued vectors 
+
+[IMDB movie review dataset](ai.stanford.edu/~amaas/data/sentiment/) contains 100k movie reviews, which are split into training set (25k, with labels), test set (25k, with labels), and unlabeled set (50k). A doc2vec model (`PV-DBOW`) is trained on the combined training set and unlabeld set (75k in total), with default parameter setting (run `python run_running.py --help` to see the default), which results in the vector representation of of 75k documents (we only need the 25k from training set to train the classifier).
+
+Next the trained doc2vec model learns the vector representation of reviews in the test set (`python run_inferece --filenames_infer=/PATH/TO/FILENAMES_INFER`).
+
+Given the vector representation of 25k labeled reviews in the training set, and 25k labeled reviews in the test set, a logistic regression is trained on training set and validated on test set (validation accuracy: 0.87).
+
 ### Reference
 1. Q Le, T Mikolov - Distributed Representations of Sentences and Documents, ICML 2014
 2. Gensim implementation by Radim Řehůřek, https://radimrehurek.com/gensim/models/doc2vec.html
